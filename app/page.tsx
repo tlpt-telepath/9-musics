@@ -206,7 +206,29 @@ export default function HomePage() {
       <header className="mb-6 space-y-2">
         <p className="text-xs uppercase tracking-[0.2em] text-cyan-300">My Best 9 Songs Builder</p>
         <h1 className="text-2xl font-bold text-slate-100 sm:text-3xl">#MyBest9Songs</h1>
-        <p className="text-sm text-slate-300">iTunes Search API で9曲を選び、3x3グリッドを作れます。</p>
+        <p className="text-sm text-slate-300">
+          iTunes Search API で9曲を選び、3x3グリッドを作れます。
+          <br />
+          作者：
+          <a
+            href="https://x.com/tlpt_telepath"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="ml-1 text-cyan-300 underline decoration-cyan-400/60 underline-offset-2 hover:text-cyan-200"
+          >
+            @tlpt_telepath
+          </a>
+          <br />
+          アニメ版は
+          <a
+            href="https://tlpt-telepath.github.io/9-animes/"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="ml-1 text-cyan-300 underline decoration-cyan-400/60 underline-offset-2 hover:text-cyan-200"
+          >
+            こちら
+          </a>
+        </p>
       </header>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1.05fr_1fr]">
