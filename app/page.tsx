@@ -1,24 +1,21 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { AnimeCellEditor } from '@/components/AnimeCellEditor';
-import { AnimeGrid } from '@/components/AnimeGrid';
-import { ExportPanel } from '@/components/ExportPanel';
-import { searchAnime, getAnimeDisplayTitle } from '@/lib/animeApi';
-import { AnimeSlot, AnimeSummary } from '@/types/anime';
+import { SongCellEditor } from '@/components/SongCellEditor';
+import { SongGrid } from '@/components/SongGrid';
+import { SharePanel } from '@/components/SharePanel';
+import { getSongDisplayTitle, searchSongs } from '@/lib/itunesApi';
+import { SongSlot, SongSummary } from '@/types/song';
 
 const SLOT_COUNT = 9;
 const DEBOUNCE_MS = 400;
-const STORAGE_KEY = 'nine-animes-state-v1';
-const SHORT_TOTAL_MAX_LENGTH = 140;
-const SHARE_HASHTAG = '#私を構成する9つのアニメ';
-const SHARE_URL = 'https://tlpt-telepath.github.io/9-animes/';
-
-type ShareMode = 'full' | 'short';
+const STORAGE_KEY = 'my-best-9-songs-state-v1';
+const SHARE_HASHTAG = '#MyBest9Songs';
+const SHARE_URL = process.env.NEXT_PUBLIC_SHARE_URL || 'https://tlpt-telepath.github.io/9-musics/';
 
 type PersistedSlot = {
   id: number;
-  selectedAnime: AnimeSummary | null;
+  selectedSong: SongSummary | null;
 };
 
 type PersistedState = {
@@ -26,10 +23,10 @@ type PersistedState = {
   slots: PersistedSlot[];
 };
 
-function createInitialSlots(): AnimeSlot[] {
+function createInitialSlots(): SongSlot[] {
   return Array.from({ length: SLOT_COUNT }, (_, i) => ({
     id: i + 1,
-    selectedAnime: null,
+    selectedSong: null,
     searchQuery: '',
     searchResults: [],
     isSearching: false,
@@ -37,12 +34,12 @@ function createInitialSlots(): AnimeSlot[] {
   }));
 }
 
-function toPersistedState(title: string, slots: AnimeSlot[]): PersistedState {
+function toPersistedState(title: string, slots: SongSlot[]): PersistedState {
   return {
     title,
     slots: slots.map((slot) => ({
       id: slot.id,
-      selectedAnime: slot.selectedAnime
+      selectedSong: slot.selectedSong
     }))
   };
 }
@@ -51,65 +48,35 @@ function normalizeQuery(text: string): string {
   return text.trim().toLowerCase();
 }
 
-function composeShareText(body: string): string {
-  return `${SHARE_HASHTAG}\n\n${body}\n\n${SHARE_URL}`;
+function composeShareText(lines: string[]): string {
+  const heading = `${SHARE_HASHTAG} を作りました！`;
+  if (!lines.length) {
+    return `${heading}\n${SHARE_URL}`;
+  }
+
+  return `${heading}\n${lines.join(' / ')}\n${SHARE_URL}`;
 }
 
-function buildShortShareText(lines: string[]): string {
-  const baseLines = lines.length ? lines : ['1. （まだ選択中）'];
-  const fixedLength = composeShareText('').length;
-  const bodyBudget = SHORT_TOTAL_MAX_LENGTH - fixedLength;
-  if (bodyBudget <= 0) return `${SHARE_HASHTAG}\n\n${SHARE_URL}`;
-
-  const result: string[] = [];
-  let bodyLength = 0;
-
-  for (let i = 0; i < baseLines.length; i += 1) {
-    const line = baseLines[i];
-    const lineWithBreak = result.length ? `\n${line}` : line;
-
-    if (bodyLength + lineWithBreak.length <= bodyBudget) {
-      result.push(line);
-      bodyLength += lineWithBreak.length;
-      continue;
-    }
-
-    const prefixMatch = line.match(/^(\d+\.\s*)/);
-    const prefix = prefixMatch ? prefixMatch[1] : `${i + 1}. `;
-    const remaining = bodyBudget - bodyLength - (result.length ? 1 : 0);
-    if (remaining > prefix.length + 1) {
-      const titleRoom = remaining - prefix.length - 1;
-      const rawTitle = line.replace(/^(\d+\.\s*)/, '');
-      result.push(`${prefix}${rawTitle.slice(0, titleRoom)}…`);
-    } else if (!result.length) {
-      result.push(`${prefix.slice(0, Math.max(0, remaining - 1))}…`);
-    }
-    break;
-  }
-
-  let text = composeShareText(result.join('\n'));
-  if (text.length <= SHORT_TOTAL_MAX_LENGTH) return text;
-
-  let body = result.join('\n');
-  while (text.length > SHORT_TOTAL_MAX_LENGTH && body.length > 1) {
-    body = `${body.slice(0, -2)}…`;
-    text = composeShareText(body);
-  }
-  return text;
+function buildShareLines(slots: SongSlot[]): string[] {
+  return slots
+    .filter((slot) => Boolean(slot.selectedSong))
+    .slice(0, 4)
+    .map((slot) => getSongDisplayTitle(slot.selectedSong as SongSummary));
 }
 
 export default function HomePage() {
-  const [title, setTitle] = useState('私を構成する9つのアニメ');
-  const [slots, setSlots] = useState<AnimeSlot[]>(createInitialSlots());
+  const [title, setTitle] = useState('#MyBest9Songs');
+  const [slots, setSlots] = useState<SongSlot[]>(createInitialSlots());
   const [copyError, setCopyError] = useState<string | null>(null);
-  const [shareMode, setShareMode] = useState<ShareMode>('full');
 
   useEffect(() => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (!raw) return;
+
       const parsed = JSON.parse(raw) as PersistedState;
       if (parsed.title) setTitle(parsed.title);
+
       if (Array.isArray(parsed.slots)) {
         setSlots((current) =>
           current.map((slot) => {
@@ -117,7 +84,7 @@ export default function HomePage() {
             if (!found) return slot;
             return {
               ...slot,
-              selectedAnime: found.selectedAnime
+              selectedSong: found.selectedSong
             };
           })
         );
@@ -134,23 +101,12 @@ export default function HomePage() {
 
   useEffect(() => {
     const timers = slots.map((slot) => {
-      const selectedTitle = slot.selectedAnime ? getAnimeDisplayTitle(slot.selectedAnime) : '';
+      const selectedTitle = slot.selectedSong ? getSongDisplayTitle(slot.selectedSong) : '';
       const isSelectedTitleQuery =
-        Boolean(slot.selectedAnime) &&
+        Boolean(slot.selectedSong) &&
         normalizeQuery(slot.searchQuery) === normalizeQuery(selectedTitle);
 
-      if (isSelectedTitleQuery) {
-        if (slot.searchResults.length || slot.error || slot.isSearching) {
-          setSlots((current) =>
-            current.map((s) =>
-              s.id === slot.id ? { ...s, searchResults: [], error: null, isSearching: false } : s
-            )
-          );
-        }
-        return null;
-      }
-
-      if (!slot.searchQuery.trim()) {
+      if (isSelectedTitleQuery || !slot.searchQuery.trim()) {
         if (slot.searchResults.length || slot.error || slot.isSearching) {
           setSlots((current) =>
             current.map((s) =>
@@ -167,7 +123,7 @@ export default function HomePage() {
         );
 
         try {
-          const results = await searchAnime(slot.searchQuery);
+          const results = await searchSongs(slot.searchQuery);
           setSlots((current) =>
             current.map((s) =>
               s.id === slot.id
@@ -175,14 +131,16 @@ export default function HomePage() {
                     ...s,
                     searchResults: results,
                     isSearching: false,
-                    error: results.length ? null : '候補が見つかりませんでした。別表記でも試してください。'
+                    error: results.length ? null : '候補が見つかりませんでした。別キーワードでも試してください。'
                   }
                 : s
             )
           );
         } catch (error) {
           const message =
-            error instanceof Error ? error.message : '検索に失敗しました。時間を空けて再試行してください。';
+            error instanceof Error
+              ? error.message
+              : '検索に失敗しました。時間を空けて再試行してください。';
           setSlots((current) =>
             current.map((s) =>
               s.id === slot.id ? { ...s, isSearching: false, error: message, searchResults: [] } : s
@@ -201,22 +159,9 @@ export default function HomePage() {
     };
   }, [slots]);
 
-  const shareLines = useMemo(
-    () =>
-      slots
-        .filter((slot) => slot.selectedAnime)
-        .map((slot) => `${slot.id}. ${getAnimeDisplayTitle(slot.selectedAnime as AnimeSummary)}`),
-    [slots]
-  );
+  const shareText = useMemo(() => composeShareText(buildShareLines(slots)), [slots]);
 
-  const fullShareText = useMemo(
-    () => composeShareText(shareLines.length ? shareLines.join('\n') : '1. （まだ選択中）'),
-    [shareLines]
-  );
-  const shortShareText = useMemo(() => buildShortShareText(shareLines), [shareLines]);
-  const activeShareText = shareMode === 'short' ? shortShareText : fullShareText;
-
-  const updateSlot = (slotId: number, updater: (prev: AnimeSlot) => AnimeSlot): void => {
+  const updateSlot = (slotId: number, updater: (prev: SongSlot) => SongSlot): void => {
     setSlots((current) => current.map((slot) => (slot.id === slotId ? updater(slot) : slot)));
   };
 
@@ -224,21 +169,21 @@ export default function HomePage() {
     updateSlot(slotId, (slot) => ({ ...slot, searchQuery: value }));
   };
 
-  const handleSelectAnime = (slotId: number, anime: AnimeSummary): void => {
+  const handleSelectSong = (slotId: number, song: SongSummary): void => {
     updateSlot(slotId, (slot) => ({
       ...slot,
-      selectedAnime: anime,
-      searchQuery: getAnimeDisplayTitle(anime),
+      selectedSong: song,
+      searchQuery: getSongDisplayTitle(song),
       searchResults: [],
       isSearching: false,
       error: null
     }));
   };
 
-  const handleClearAnime = (slotId: number): void => {
+  const handleClearSong = (slotId: number): void => {
     updateSlot(slotId, (slot) => ({
       ...slot,
-      selectedAnime: null,
+      selectedSong: null,
       searchQuery: '',
       searchResults: [],
       error: null,
@@ -248,8 +193,9 @@ export default function HomePage() {
 
   const handleCopyShareText = async (): Promise<void> => {
     setCopyError(null);
+
     try {
-      await navigator.clipboard.writeText(activeShareText);
+      await navigator.clipboard.writeText(shareText);
     } catch {
       setCopyError('クリップボードへのコピーに失敗しました。ブラウザ設定をご確認ください。');
     }
@@ -258,21 +204,9 @@ export default function HomePage() {
   return (
     <main className="mx-auto min-h-screen w-full max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
       <header className="mb-6 space-y-2">
-        <p className="text-xs uppercase tracking-[0.2em] text-cyan-300">9 Anime Builder</p>
-        <h1 className="text-2xl font-bold text-slate-100 sm:text-3xl">私を構成する9つのアニメ</h1>
-        <p className="text-sm text-slate-300">
-          9作品を選んで一覧化し、シェア文を作成できます。
-          <br />
-          作者：
-          <a
-            href="https://x.com/tlpt_telepath"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="ml-1 text-cyan-300 underline decoration-cyan-400/60 underline-offset-2 hover:text-cyan-200"
-          >
-            @tlpt_telepath
-          </a>
-        </p>
+        <p className="text-xs uppercase tracking-[0.2em] text-cyan-300">My Best 9 Songs Builder</p>
+        <h1 className="text-2xl font-bold text-slate-100 sm:text-3xl">#MyBest9Songs</h1>
+        <p className="text-sm text-slate-300">iTunes Search API で9曲を選び、3x3グリッドを作れます。</p>
       </header>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1.05fr_1fr]">
@@ -289,27 +223,20 @@ export default function HomePage() {
 
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
             {slots.map((slot) => (
-              <AnimeCellEditor
+              <SongCellEditor
                 key={slot.id}
                 slot={slot}
                 onQueryChange={handleQueryChange}
-                onSelectAnime={handleSelectAnime}
-                onClearAnime={handleClearAnime}
+                onSelectSong={handleSelectSong}
+                onClearSong={handleClearSong}
               />
             ))}
           </div>
 
-          <ExportPanel
-            onCopyShareText={handleCopyShareText}
-            fullShareText={fullShareText}
-            shortShareText={shortShareText}
-            shareMode={shareMode}
-            onChangeShareMode={setShareMode}
-            copyError={copyError}
-          />
+          <SharePanel onCopyShareText={handleCopyShareText} shareText={shareText} copyError={copyError} />
         </section>
 
-        <AnimeGrid title={title} slots={slots} />
+        <SongGrid title={title} slots={slots} />
       </div>
     </main>
   );
