@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { SongCellEditor } from '@/components/SongCellEditor';
 import { SongGrid } from '@/components/SongGrid';
 import { SharePanel } from '@/components/SharePanel';
@@ -9,6 +9,7 @@ import { SongSlot, SongSummary } from '@/types/song';
 
 const SLOT_COUNT = 9;
 const DEBOUNCE_MS = 400;
+const MIN_QUERY_LENGTH = 2;
 const STORAGE_KEY = 'my-best-9-songs-state-v1';
 const SHARE_HASHTAG = '#MyBest9Songs';
 const SHARE_URL = process.env.NEXT_PUBLIC_SHARE_URL || 'https://tlpt-telepath.github.io/9-musics/';
@@ -68,6 +69,8 @@ export default function HomePage() {
   const [title, setTitle] = useState('#MyBest9Songs');
   const [slots, setSlots] = useState<SongSlot[]>(createInitialSlots());
   const [copyError, setCopyError] = useState<string | null>(null);
+  const lastFetchedQueryBySlotRef = useRef<Record<number, string>>({});
+  const inFlightQueryBySlotRef = useRef<Record<number, string>>({});
 
   useEffect(() => {
     try {
@@ -101,12 +104,17 @@ export default function HomePage() {
 
   useEffect(() => {
     const timers = slots.map((slot) => {
+      const normalizedQuery = normalizeQuery(slot.searchQuery);
       const selectedTitle = slot.selectedSong ? getSongDisplayTitle(slot.selectedSong) : '';
       const isSelectedTitleQuery =
         Boolean(slot.selectedSong) &&
-        normalizeQuery(slot.searchQuery) === normalizeQuery(selectedTitle);
+        normalizedQuery === normalizeQuery(selectedTitle);
 
-      if (isSelectedTitleQuery || !slot.searchQuery.trim()) {
+      if (isSelectedTitleQuery || !slot.searchQuery.trim() || normalizedQuery.length < MIN_QUERY_LENGTH) {
+        delete inFlightQueryBySlotRef.current[slot.id];
+        if (!slot.searchQuery.trim() || normalizedQuery.length < MIN_QUERY_LENGTH) {
+          delete lastFetchedQueryBySlotRef.current[slot.id];
+        }
         if (slot.searchResults.length || slot.error || slot.isSearching) {
           setSlots((current) =>
             current.map((s) =>
@@ -117,16 +125,30 @@ export default function HomePage() {
         return null;
       }
 
+      if (
+        lastFetchedQueryBySlotRef.current[slot.id] === normalizedQuery ||
+        inFlightQueryBySlotRef.current[slot.id] === normalizedQuery
+      ) {
+        return null;
+      }
+
       const timer = window.setTimeout(async () => {
+        const requestQuery = slot.searchQuery.trim();
+        const requestKey = normalizeQuery(requestQuery);
+        inFlightQueryBySlotRef.current[slot.id] = requestKey;
+
         setSlots((current) =>
           current.map((s) => (s.id === slot.id ? { ...s, isSearching: true, error: null } : s))
         );
 
         try {
-          const results = await searchSongs(slot.searchQuery);
+          const results = await searchSongs(requestQuery);
+          lastFetchedQueryBySlotRef.current[slot.id] = requestKey;
+          delete inFlightQueryBySlotRef.current[slot.id];
+
           setSlots((current) =>
             current.map((s) =>
-              s.id === slot.id
+              s.id === slot.id && normalizeQuery(s.searchQuery) === requestKey
                 ? {
                     ...s,
                     searchResults: results,
@@ -137,13 +159,16 @@ export default function HomePage() {
             )
           );
         } catch (error) {
+          delete inFlightQueryBySlotRef.current[slot.id];
           const message =
             error instanceof Error
               ? error.message
               : '検索に失敗しました。時間を空けて再試行してください。';
           setSlots((current) =>
             current.map((s) =>
-              s.id === slot.id ? { ...s, isSearching: false, error: message, searchResults: [] } : s
+              s.id === slot.id && normalizeQuery(s.searchQuery) === requestKey
+                ? { ...s, isSearching: false, error: message, searchResults: [] }
+                : s
             )
           );
         }
@@ -166,10 +191,17 @@ export default function HomePage() {
   };
 
   const handleQueryChange = (slotId: number, value: string): void => {
+    const normalized = normalizeQuery(value);
+    if (!normalized || normalized.length < MIN_QUERY_LENGTH) {
+      delete lastFetchedQueryBySlotRef.current[slotId];
+      delete inFlightQueryBySlotRef.current[slotId];
+    }
     updateSlot(slotId, (slot) => ({ ...slot, searchQuery: value }));
   };
 
   const handleSelectSong = (slotId: number, song: SongSummary): void => {
+    delete inFlightQueryBySlotRef.current[slotId];
+    lastFetchedQueryBySlotRef.current[slotId] = normalizeQuery(getSongDisplayTitle(song));
     updateSlot(slotId, (slot) => ({
       ...slot,
       selectedSong: song,
@@ -181,6 +213,8 @@ export default function HomePage() {
   };
 
   const handleClearSong = (slotId: number): void => {
+    delete lastFetchedQueryBySlotRef.current[slotId];
+    delete inFlightQueryBySlotRef.current[slotId];
     updateSlot(slotId, (slot) => ({
       ...slot,
       selectedSong: null,
